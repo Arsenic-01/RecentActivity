@@ -1,35 +1,89 @@
-import { Client, Users } from 'node-appwrite';
+// Function: get-recent-activity
+// Trigger: HTTP Request (GET)
 
-// This Appwrite function will be executed every time your function is triggered
-export default async ({ req, res, log, error }) => {
-  // You can use the Appwrite SDK to interact with other services
-  // For this example, we're using the Users service
+import { Client, Databases, Query } from 'node-appwrite';
+
+export default async ({ res, log, error }) => {
+  const {
+    APPWRITE_DATABASE_ID,
+    APPWRITE_NOTE_COLLECTION_ID,
+    APPWRITE_USER_COLLECTION_ID,
+    APPWRITE_YOUTUBE_COLLECTION_ID,
+    APPWRITE_FORM_COLLECTION_ID,
+  } = process.env;
+
   const client = new Client()
-    .setEndpoint(process.env.APPWRITE_FUNCTION_API_ENDPOINT)
-    .setProject(process.env.APPWRITE_FUNCTION_PROJECT_ID)
-    .setKey(req.headers['x-appwrite-key'] ?? '');
-  const users = new Users(client);
+    .setEndpoint(process.env.APPWRITE_ENDPOINT)
+    .setProject(process.env.APPWRITE_PROJECT)
+    .setKey(process.env.APPWRITE_API_KEY);
+
+  const db = new Databases(client);
 
   try {
-    const response = await users.list();
-    // Log messages and errors to the Appwrite Console
-    // These logs won't be seen by your end users
-    log(`Total users: ${response.total}`);
-  } catch(err) {
-    error("Could not list users: " + err.message);
-  }
+    log('Fetching recent activities from all collections...');
 
-  // The req object contains the request data
-  if (req.path === "/ping") {
-    // Use res object to respond with text(), json(), or binary()
-    // Don't forget to return a response!
-    return res.text("Pong");
-  }
+    // Fetch a larger pool of recent items from each collection
+    const [recentNotes, recentUsers, recentYoutube, recentForms] =
+      await Promise.all([
+        db.listDocuments(APPWRITE_DATABASE_ID, APPWRITE_NOTE_COLLECTION_ID, [
+          Query.orderDesc('$createdAt'),
+          Query.limit(10),
+        ]),
+        db.listDocuments(APPWRITE_DATABASE_ID, APPWRITE_USER_COLLECTION_ID, [
+          Query.orderDesc('$createdAt'),
+          Query.limit(10),
+        ]),
+        db.listDocuments(APPWRITE_DATABASE_ID, APPWRITE_YOUTUBE_COLLECTION_ID, [
+          Query.orderDesc('$createdAt'),
+          Query.limit(10),
+        ]),
+        db.listDocuments(APPWRITE_DATABASE_ID, APPWRITE_FORM_COLLECTION_ID, [
+          Query.orderDesc('$createdAt'),
+          Query.limit(10),
+        ]),
+      ]);
 
-  return res.json({
-    motto: "Build like a team of hundreds_",
-    learn: "https://appwrite.io/docs",
-    connect: "https://appwrite.io/discord",
-    getInspired: "https://builtwith.appwrite.io",
-  });
+    // Map all documents to a unified activity format
+    const activities = [
+      ...recentNotes.documents.map((doc) => ({
+        type: 'note',
+        title: doc.title,
+        user: doc.userName || 'Unknown',
+        timestamp: doc.$createdAt,
+      })),
+      ...recentUsers.documents.map((doc) => ({
+        type: 'user',
+        title: `New ${doc.role} registered`,
+        user: doc.name,
+        timestamp: doc.$createdAt,
+      })),
+      ...recentYoutube.documents.map((doc) => ({
+        type: 'youtube',
+        title: doc.title,
+        user: doc.createdBy,
+        timestamp: doc.$createdAt,
+      })),
+      ...recentForms.documents.map((doc) => ({
+        type: 'form',
+        title: doc.title,
+        user: doc.createdBy,
+        timestamp: doc.$createdAt,
+      })),
+    ];
+
+    // Sort the combined list to find the truly most recent items
+    activities.sort(
+      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
+    );
+
+    // Return the top 8 most recent activities overall
+    const finalActivities = activities.slice(0, 8);
+    log(`Recent Activities: ${JSON.stringify(finalActivities)}`);
+    log(`Successfully compiled ${finalActivities.length} recent activities.`);
+
+    return res.json(finalActivities);
+  } catch (e) {
+    error('Error fetching recent activity:', e);
+    return res.json({ success: false, error: e.message }, 500);
+  }
 };
